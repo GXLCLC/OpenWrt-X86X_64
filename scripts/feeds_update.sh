@@ -25,7 +25,12 @@ SHALLOW="--depth=1"
 # 参数: $1=仓库地址 $2=分支名 $3=本地目录名
 # -----------------------------------------------------------------------------
 shallow_clone() {
-    local repo="$1" branch="$2" name="$3" dest="$TMPDIR_FEEDS/$name"
+    # 注意：不能在同一个 local 语句里交叉引用变量（如
+    #   local repo="$1" branch="$2" name="$3" dest="$TMPDIR_FEEDS/$name"
+    #   在 set -u 下，$name 此时还未绑定，会报 "name: unbound variable"
+    # 所以拆成两行，让 dest 在 name 赋值后再声明。
+    local repo="$1" branch="$2" name="$3"
+    local dest="$TMPDIR_FEEDS/$name"
     echo "==> 正在浅克隆: $repo (分支: $branch)"
     if ! git clone --quiet $SHALLOW --single-branch --branch "$branch" "$repo" "$dest"; then
         echo "=============================================================="
@@ -123,9 +128,9 @@ copy_package "turboacc-pkg" "shortcut-fe" "shortcut-fe"
 
 echo "  -- 替换 firewall4 / nftables / libnftnl 为 turboacc 适配版本 --"
 # 先读取源码内版本号，再从 package 分支取出对应目录
-FIREWALL4_VERSION="$(grep -oP 'PKG_SOURCE_VERSION:=\s*\K[0-9a-f]{6,40}' package/network/config/firewall4/Makefile || true)"
-NFTABLES_VERSION="$(grep -oP 'PKG_VERSION:=\s*\K[0-9.]+' package/network/utils/nftables/Makefile || true)"
-LIBNFTNL_VERSION="$(grep -oP 'PKG_VERSION:=\s*\K[0-9.]+' package/libs/libnftnl/Makefile || true)"
+FIREWALL4_VERSION="$(grep -oP 'PKG_SOURCE_VERSION:\s*\K[0-9a-f]{6,40}' package/network/config/firewall4/Makefile || true)"
+NFTABLES_VERSION="$(grep -oP 'PKG_VERSION:\s*\K[0-9.]+' package/network/utils/nftables/Makefile || true)"
+LIBNFTNL_VERSION="$(grep -oP 'PKG_VERSION:\s*\K[0-9.]+' package/libs/libnftnl/Makefile || true)"
 echo "    源码版本: firewall4=$FIREWALL4_VERSION nftables=$NFTABLES_VERSION libnftnl=$LIBNFTNL_VERSION"
 
 rm -rf package/network/config/firewall4 \
