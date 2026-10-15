@@ -53,7 +53,8 @@ fi
 # 生成 sha512 哈希；OpenWrt 默认使用 $5$ 格式
 PASSWORD_HASH="$(openssl passwd -5 '12345678')"
 # shadow 格式：root:<hash>:0:99999:7:::
-sed -i "s|^root:::|root:${PASSWORD_HASH}:0:99999:7:::|123456" "$SHADOW_FILE"
+ROOT_LINE="root:${PASSWORD_HASH}:0:99999:7:::"
+sed -i "s|^root:::|${ROOT_LINE}|" "$SHADOW_FILE"
 echo "[2/6] root 登录密码已设置为 12345678（sha512）"
 
 # -----------------------------------------------------------------------------
