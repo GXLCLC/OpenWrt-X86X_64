@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+echo ">>> 开始执行自定义定制脚本..."
+
 # 1. 默认后台 IP 192.168.2.1
 sed -i 's/192.168.1.1/192.168.2.1/g' package/base-files/files/bin/config_generate 2>/dev/null || true
 
@@ -18,7 +20,7 @@ sed -i "s/option zonename.*/option zonename 'Asia\/Shanghai'/" package/base-file
 # 5. 默认主题 Argon
 sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' package/lean/default-settings/files/zzz-default-settings 2>/dev/null || true
 
-# 6. i18n 自动配套：存在 luci-i18n-<short>-zh-cn 才追加到 .config
+# 6. i18n 自动配套
 PLUGINS="
 luci-app-smartdns
 luci-app-ddnsto
@@ -39,12 +41,10 @@ for pkg in $PLUGINS; do
     i18n="luci-i18n-${short}-zh-cn"
     if find package/feeds -maxdepth 4 -type d -name "$i18n" 2>/dev/null | grep -q .; then
         echo "CONFIG_PACKAGE_${i18n}=y" >> .config
-        echo ">>> 已配套中文包: $i18n"
     fi
 done
 
-# 7. 强制配置 TurboAcc（仅开启流量分载、全锥形 NAT、BBR，关闭其他如 SFE）
-# 写入默认 UCI 配置文件（此文件会在编译时打包进固件）
+# 7. 强制配置 TurboAcc（仅开启流量分载、全锥形 NAT、BBR，关闭 SFE 等）
 TURBOACC_CONF="package/lean/luci-app-turboacc/root/etc/config/turboacc"
 if [ -f "$TURBOACC_CONF" ]; then
 cat > "$TURBOACC_CONF" <<'EOF'
@@ -56,9 +56,19 @@ config turboacc 'config'
 	option sfe_ipv6 '0'
 	option dns_caching '0'
 EOF
-    echo ">>> TurboAcc 默认配置已注入 (仅保留流量分载/全锥形/BBR)"
+fi
+
+# 8. 修复 OAF 在 Linux 6.15+ (当前内核 6.18) 的 Timer API 编译错误
+echo ">>> 正在适配 Linux 6.18 内核 OAF Timer 接口..."
+OAF_C_FILE=$(find package/feeds -type f -name "app_filter.c" 2>/dev/null | head -n 1)
+if [ -n "$OAF_C_FILE" ]; then
+    echo ">>> 找到 OAF 源文件: $OAF_C_FILE，正在替换废弃的 Timer API..."
+    # 将 del_timer_sync 替换为 timer_delete_sync
+    sed -i 's/del_timer_sync/timer_delete_sync/g' "$OAF_C_FILE"
+    # 替换旧的 from_timer 宏以适配新内核
+    sed -i 's/from_timer(/timer_container_of(/g' "$OAF_C_FILE"
 else
-    echo ">>> 警告: 未找到原生 TurboAcc 配置文件，请检查源码树"
+    echo ">>> 警告: 未找到 app_filter.c，请检查 feeds 目录结构"
 fi
 
 echo ">>> custom.sh 执行完成"
