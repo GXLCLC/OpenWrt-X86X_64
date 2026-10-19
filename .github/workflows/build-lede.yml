@@ -44,7 +44,6 @@ jobs:
             https://github.com/coolsnowwolf/lede \
             https://github.com/kenzok8/openwrt-packages \
             https://github.com/kenzok8/small-package \
-            https://github.com/chenmozhijin/turboacc \
             https://github.com/EasyTier/luci-app-easytier; do
             echo ">>> 检查 $repo"
             git ls-remote "$repo" HEAD >/dev/null || { echo "ERROR: 无法连接 $repo"; exit 1; }
@@ -53,7 +52,7 @@ jobs:
       - name: 克隆 Lean LEDE master 分支
         run: git clone --depth=1 -b "$REPO_BRANCH" "$REPO_URL" lede
 
-      - name: 注入 feeds 源（kenzok8 + TurboAcc 脚本源）
+      - name: 注入 feeds 源（kenzok8 补充源）
         working-directory: lede
         run: |
           sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
@@ -72,13 +71,6 @@ jobs:
           [ -d /tmp/easytier/luci-app-easytier ] || { echo "ERROR: easytier 目录不完整"; exit 1; }
           cp -r /tmp/easytier/luci-app-easytier lede/package/
 
-      - name: 应用 TurboAcc（禁用 Shortcut-FE，仅保留流量分载/全锥形NAT/BBR）
-        working-directory: lede
-        run: |
-          set -e
-          git clone --depth=1 -b luci https://github.com/chenmozhijin/turboacc.git /tmp/turboacc-script
-          bash /tmp/turboacc-script/add_turboacc.sh --no-sfe
-
       - name: 复制 X86_64 配置并执行 defconfig
         working-directory: lede
         run: |
@@ -88,6 +80,11 @@ jobs:
       - name: 执行自定义脚本（密码/主机名/时区/主题/i18n 配套）
         working-directory: lede
         run: bash "../$CUSTOM_SCRIPT"
+
+      - name: 提取内核版本供 Release 使用
+        run: |
+          K_VER=$(grep -E '^LINUX_VERSION-' lede/include/kernel-version.mk | awk -F'-' '{print $3}' | head -n 1)
+          echo "KERNEL_VERSION=${K_VER:-5.4}" >> $GITHUB_ENV
 
       - name: DL 缓存
         uses: actions/cache@v4
@@ -147,14 +144,5 @@ jobs:
             **内核版本**：`${{ env.KERNEL_VERSION }}`  
             **固件版本**：${{ env.TIMESTAMP }}  
 
-            ### 已集成插件
+            ### 已集成插件（纯净版，不含 kmod）
             luci-app-smartdns, luci-app-ddnsto (中文), luci-app-adguardhome (含核心),
-            luci-app-oaf (含 kmod-oaf), luci-app-turboacc (流量分载/全锥形NAT/BBR),
-            luci-app-mwan3, luci-theme-argon, luci-theme-argon-config,
-            luci-app-nlbwmon, luci-app-easytier, luci-app-wol, luci-app-upnp,
-            luci-app-ttyd, luci-app-autoreboot, luci-app-wechatpush
-          files: release/*
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
