@@ -1,228 +1,160 @@
-name: Build ImmortalWrt X86_64
+name: Build LEDE X86_64 Squashfs
 
-# 触发方式：仅手动触发（workflow_dispatch）
 on:
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: "Release 标签名（留空则自动生成 日期+时分）"
-        required: false
-        default: ""
-      clean_build:
-        description: "是否清理后全量编译（耗时更长，默认否）"
-        required: false
-        type: boolean
-        default: false
+  workflow_dispatch:   # 仅手动触发，无任何自动触发器
 
 permissions:
   contents: write
 
 env:
-  # ImmortalWrt 源码仓库与分支
-  OPENWRT_REPO: https://github.com/immortalwrt/immortalwrt.git
-  OPENWRT_BRANCH: openwrt-24.10
-  # 编译输出目录
-  IMAGE_DIR: openwrt/bin/targets/x86/64
+  TZ: Asia/Shanghai
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  CONFIG_FILE: config/X86_64.config
+  CUSTOM_SCRIPT: scripts/custom.sh
+  VERIFY_SCRIPT: scripts/verify_firmware.sh
 
 jobs:
   build:
-    name: 编译 ImmortalWrt X86_64
     runs-on: ubuntu-24.04
-    timeout-minutes: 600
-
     steps:
-      # ---------------------------------------------------------------------
-      # 1. 检出本仓库
-      # ---------------------------------------------------------------------
-      - name: 检出仓库代码
+      - name: 检出本仓库
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------------------
-      # 2. 初始化编译环境（安装依赖，清理多余软件以腾出磁盘空间）
-      #    ubuntu-24.04 runner 预装了大量用不到的组件，需卸载以获取 ~40GB 空间
-      # ---------------------------------------------------------------------
-      - name: 初始化编译环境
+      - name: 安装 Ubuntu 24.04 编译依赖
         run: |
-          echo "===== 清理 runner 预装软件，释放磁盘空间 ====="
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force || true
-          sudo apt-get -y purge azure-cli google-cloud-sdk microsoft-edge-stable \
-              firefox powershell || true
-          sudo apt-get -y autoremove || true
-          sudo apt-get -y clean || true
-          df -h /
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler flex gawk gcc-multilib g++-multilib \
+            gettext genisoimage git gperf haveged help2man intltool \
+            libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+            libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev \
+            libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz \
+            msmtp ninja-build p7zip p7zip-full patch pkgconf python3 \
+            python3-pyelftools python3-setuptools qemu-utils rsync scons \
+            squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip \
+            vim wget xmlto xxd zlib1g-dev
 
-          echo "===== 安装编译依赖 ====="
-          sudo apt-get -y update
-          sudo apt-get -y install \
-            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext \
-            git gperf haveged help2man intltool jq lib32gcc-s1 libc6-dev-i386 libelf-dev \
-            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
-            libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
-            lrzsz mkisofs ninja-build nlohmann-json3-dev p7zip-full patch pkgconf python3 \
-            python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools \
-            subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
-
-          echo "===== 磁盘空间 ====="
-          df -h /
-
-      # ---------------------------------------------------------------------
-      # 3. 克隆 ImmortalWrt 源码（浅克隆，指定 openwrt-24.10 分支）
-      # ---------------------------------------------------------------------
-      - name: 克隆 ImmortalWrt 源码
+      - name: 校验第三方源连通性与分支
         run: |
-          git clone --depth=1 --single-branch --branch "$OPENWRT_BRANCH" \
-            "$OPENWRT_REPO" openwrt
-          cd openwrt
-          git rev-parse HEAD
-
-      # ---------------------------------------------------------------------
-      # 4. 更新第三方插件 feeds（kenzok8/EasyTier/DDNSTO/OAF/TurboAcc）
-      #    任一仓库拉取失败立即终止，避免产出缺插件的固件
-      # ---------------------------------------------------------------------
-      - name: 更新第三方插件 feeds
-        run: |
-          chmod +x scripts/feeds_update.sh
-          bash scripts/feeds_update.sh openwrt
-
-      # ---------------------------------------------------------------------
-      # 5. 写入构建配置（X86_64.config → .config）
-      # ---------------------------------------------------------------------
-      - name: 写入构建配置
-        run: |
-          cp config/X86_64.config openwrt/.config
-          echo "===== 已写入 .config，插件条目统计 ====="
-          grep -c 'CONFIG_PACKAGE_' openwrt/.config
-
-      # ---------------------------------------------------------------------
-      # 6. 应用系统默认设置（IP/密码/时区/主题/语言/主机名）
-      # ---------------------------------------------------------------------
-      - name: 应用系统默认设置
-        run: |
-          chmod +x scripts/system-config.sh
-          bash scripts/system-config.sh openwrt
-
-      # ---------------------------------------------------------------------
-      # 7. 预下载源码包（make download）
-      #    失败时自动重试 3 次，规避 GitHub 下载源限流
-      # ---------------------------------------------------------------------
-      - name: 预下载源码包
-        working-directory: openwrt
-        run: |
-          for i in 1 2 3; do
-            echo "===== make download 第 $i 次尝试 ====="
-            if make download -j$(nproc); then
-              echo "下载完成"
-              break
-            fi
-            if [ "$i" = "3" ]; then
-              echo "===== make download 连续失败 ====="
-              exit 1
-            fi
-            echo "下载失败，30 秒后重试..."
-            sleep 30
+          set -e
+          for repo in \
+            https://github.com/coolsnowwolf/lede \
+            https://github.com/kenzok8/openwrt-packages \
+            https://github.com/kenzok8/small-package \
+            https://github.com/chenmozhijin/turboacc \
+            https://github.com/EasyTier/luci-app-easytier; do
+            echo ">>> 检查 $repo"
+            git ls-remote "$repo" HEAD >/dev/null || { echo "ERROR: 无法连接 $repo"; exit 1; }
           done
 
-      # ---------------------------------------------------------------------
-      # 8. 编译固件
-      #    配置 ccache 加速重复编译；失败时输出日志尾部便于定位
-      # ---------------------------------------------------------------------
-      - name: 编译固件
-        working-directory: openwrt
+      - name: 克隆 Lean LEDE master 分支
+        run: git clone --depth=1 -b "$REPO_BRANCH" "$REPO_URL" lede
+
+      - name: 注入 feeds 源（kenzok8 + TurboAcc 脚本源）
+        working-directory: lede
         run: |
-          if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
-            echo "===== 用户选择全量编译，清理构建产物 ====="
-            rm -rf build_dir/target-* staging_dir/target-*
-          fi
+          sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
+          sed -i '$a src-git small https://github.com/kenzok8/small-package' feeds.conf.default
 
-          echo "===== 开始编译 ====="
-          if ! make -j$(nproc) V=s; then
-            echo "=============================================================="
-            echo "编译失败，最后 200 行日志："
-            echo "=============================================================="
-            find logs -name '*.txt' 2>/dev/null | while read -r f; do
-              echo "----- $f -----"
-              tail -n 200 "$f"
-            done
-            exit 1
-          fi
-
-          echo "===== 编译完成，产物清单 ====="
-          ls -lh bin/targets/x86/64/
-
-      # ---------------------------------------------------------------------
-      # 9. 生成固件信息与校验文件
-      # ---------------------------------------------------------------------
-      - name: 生成固件信息
+      - name: 更新并安装全部 feeds
+        working-directory: lede
         run: |
-          chmod +x scripts/firmware-info.sh
-          bash scripts/firmware-info.sh openwrt config/X86_64.config release_info
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-      # ---------------------------------------------------------------------
-      # 10. 上传构建产物（Artifact，保留 7 天）
-      #     便于在 Release 发布前预览/下载测试
-      # ---------------------------------------------------------------------
-      - name: 上传构建产物
+      - name: 浅克隆 EasyTier 并复制 luci-app-easytier
+        run: |
+          set -e
+          git clone --depth=1 https://github.com/EasyTier/luci-app-easytier.git /tmp/easytier
+          [ -d /tmp/easytier/luci-app-easytier ] || { echo "ERROR: easytier 目录不完整"; exit 1; }
+          cp -r /tmp/easytier/luci-app-easytier lede/package/
+
+      - name: 应用 TurboAcc（禁用 Shortcut-FE，仅保留流量分载/全锥形NAT/BBR）
+        working-directory: lede
+        run: |
+          set -e
+          git clone --depth=1 -b luci https://github.com/chenmozhijin/turboacc.git /tmp/turboacc-script
+          bash /tmp/turboacc-script/add_turboacc.sh --no-sfe
+
+      - name: 复制 X86_64 配置并执行 defconfig
+        working-directory: lede
+        run: |
+          cp "../$CONFIG_FILE" .config
+          make defconfig
+
+      - name: 执行自定义脚本（密码/主机名/时区/主题/i18n 配套）
+        working-directory: lede
+        run: bash "../$CUSTOM_SCRIPT"
+
+      - name: DL 缓存
+        uses: actions/cache@v4
+        with:
+          path: lede/dl
+          key: lede-dl-${{ hashFiles('config/X86_64.config') }}-${{ github.run_id }}
+          restore-keys: |
+            lede-dl-${{ hashFiles('config/X86_64.config') }}-
+
+      - name: 下载源码包
+        working-directory: lede
+        run: make download -j$(nproc)
+
+      - name: 严格编译（任意包失败立即终止）
+        working-directory: lede
+        run: |
+          set -euo pipefail
+          make -j1 V=s 2>&1 | tee build.log
+
+      - name: 固件校验（文件/格式/2G分区）
+        working-directory: lede
+        run: bash "../$VERIFY_SCRIPT"
+
+      - name: 整理发布产物（加时间前缀）
+        run: |
+          set -e
+          mkdir -p release
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          find lede/bin/targets/x86/64 -maxdepth 1 -name "*squashfs*combined*.img.gz" | while read f; do
+            base=$(basename "$f")
+            cp "$f" "release/${TIMESTAMP}-${base}"
+          done
+          ls -lh release/
+          [ "$(ls -A release)" ] || { echo "ERROR: 未生成目标 img.gz"; exit 1; }
+
+      - name: 编译失败上传完整日志
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: immortalwrt-x86-64-firmware
+          name: build-failure-logs
           path: |
-            openwrt/bin/targets/x86/64/squashfs-combined.img
-            openwrt/bin/targets/x86/64/*.manifest
-            release_info/**
-          retention-days: 7
-          if-no-files-found: error
+            lede/build.log
+            lede/.config
+            lede/logs/
+          if-no-files-found: warn
 
-      # ---------------------------------------------------------------------
-      # 11. 发布 Release
-      #     标签名：用户输入，缺省为 日期+时分
-      #     固件内容：squashfs-combined.img + sha256 + release_info.md
-      # ---------------------------------------------------------------------
-      - name: 计算 Release 标签
-        id: release_tag
-        run: |
-          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            TAG="${{ github.event.inputs.tag_name }}"
-          else
-            TAG="build-$(TZ=Asia/Shanghai date '+%Y%m%d-%H%M')"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "===== Release 标签: $TAG ====="
-
-      - name: 发布 Release
+      - name: 发布 GitHub Release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_tag.outputs.tag }}
-          name: ImmortalWrt X86_64 ${{ steps.release_tag.outputs.tag }}
-          body_path: release_info/release_info.md
+          tag_name: ${{ env.TIMESTAMP }}
+          name: LEDE-X86_64-${{ env.TIMESTAMP }}
+          body: |
+            **默认后台**：192.168.2.1  
+            **默认密码**：12345678  
+            **内核版本**：`${{ env.KERNEL_VERSION }}`  
+            **固件版本**：${{ env.TIMESTAMP }}  
+
+            ### 已集成插件
+            luci-app-smartdns, luci-app-ddnsto (中文), luci-app-adguardhome (含核心),
+            luci-app-oaf (含 kmod-oaf), luci-app-turboacc (流量分载/全锥形NAT/BBR),
+            luci-app-mwan3, luci-theme-argon, luci-theme-argon-config,
+            luci-app-nlbwmon, luci-app-easytier, luci-app-wol, luci-app-upnp,
+            luci-app-ttyd, luci-app-autoreboot, luci-app-wechatpush
+          files: release/*
           draft: false
           prerelease: false
-          files: |
-            openwrt/bin/targets/x86/64/squashfs-combined.img
-            release_info/squashfs-combined.img.sha256
-            release_info/release_info.md
-          fail_on_unmatched_files: true
-
-      # ---------------------------------------------------------------------
-      # 12. 输出结果摘要
-      # ---------------------------------------------------------------------
-      - name: 构建结果摘要
-        if: always()
-        run: |
-          {
-            echo "## 构建结果"
-            echo ""
-            echo "- ImmortalWrt 版本: $(grep -oP 'VERSION_NUMBER:=\s*\K[^\s]+' openwrt/include/version.mk || echo '未知')"
-            echo "- 固件文件: squashfs-combined.img"
-            echo "- Release 标签: ${{ steps.release_tag.outputs.tag }}"
-            echo ""
-            echo "### 默认设置"
-            echo ""
-            echo "| 项目 | 值 |"
-            echo "|------|-----|"
-            echo "| 管理地址 | http://192.168.2.1 |"
-            echo "| 登录密码 | 12345678 |"
-            echo "| 时区 | Asia/Shanghai |"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
