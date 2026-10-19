@@ -43,13 +43,22 @@ for pkg in $PLUGINS; do
     fi
 done
 
-# 7. 确保 TurboAcc 默认仅启用流量分载/全锥形NAT/BBR（写入默认 UCI，不影响编译）
-mkdir -p package/lean/default-settings/files
-cat > package/lean/default-settings/files/zzz-turboacc-defaults <<'EOF'
-uci set turboacc.config.sw_flow='1'
-uci set turboacc.config.fullcone='1'
-uci set turboacc.config.bbr='1'
-uci commit turboacc
+# 7. 强制配置 TurboAcc（仅开启流量分载、全锥形 NAT、BBR，关闭其他如 SFE）
+# 写入默认 UCI 配置文件（此文件会在编译时打包进固件）
+TURBOACC_CONF="package/lean/luci-app-turboacc/root/etc/config/turboacc"
+if [ -f "$TURBOACC_CONF" ]; then
+cat > "$TURBOACC_CONF" <<'EOF'
+config turboacc 'config'
+	option sw_flow '1'
+	option fullcone '1'
+	option tcp_bbr '1'
+	option sfe_ipv4 '0'
+	option sfe_ipv6 '0'
+	option dns_caching '0'
 EOF
+    echo ">>> TurboAcc 默认配置已注入 (仅保留流量分载/全锥形/BBR)"
+else
+    echo ">>> 警告: 未找到原生 TurboAcc 配置文件，请检查源码树"
+fi
 
 echo ">>> custom.sh 执行完成"
